@@ -38,9 +38,15 @@ Content-Type: application/json
 {"email":"docs-evidence@example.com"}
 ```
 
+Screenshot of that same terminal session:
+
+![Terminal showing the signup curl command and its 201 response](docs/evidence/signup-curl-terminal.png)
+
 **Verifying the email.** The user types the 6-digit code into `VerifyEmailPage.tsx`. This gets sent to `verify-email/index.ts`, which checks the code matches, hasn't expired, and hasn't already been used. If it's valid, the server marks the user as verified and starts a session (a signed-in browser cookie), and the user lands on the dashboard. If the code doesn't arrive, the resend button calls `resend-verification/index.ts`, which sends a new code, but only once every 60 seconds, enforced by the server, not just by disabling the button in the browser.
 
 **The dashboard.** `DashboardPage.tsx` is wrapped in `ProtectedRoute.tsx`, which calls `me/index.ts` to check whether the browser's cookie matches a real, unexpired session before showing anything. If someone who isn't signed in tries to go straight to the dashboard URL, this check fails and they're redirected to the sign-in screen instead.
+
+![The placeholder dashboard, showing the signed-in user's email and a sign-out button](docs/evidence/dashboard-signed-in.png)
 
 **Signing out.** The dashboard's sign-out button calls `signout/index.ts`, which deletes the session from the database and clears the cookie, so that cookie can never be used again even if someone had a copy of it.
 
@@ -124,6 +130,10 @@ Content-Type: application/json
 {"error":"Too many attempts. Try again later."}
 ```
 
+Screenshot of that same terminal session, showing all 11 attempts and the full 429 response:
+
+![Terminal showing 10 rejected sign-in attempts followed by a 429 with a Retry-After header](docs/evidence/rate-limit-429.png)
+
 ### Client-Side Versus Server-Side Validation
 
 **What it is.** Client-side validation checks input in the browser before it's sent, giving instant feedback without waiting on the network. Server-side validation checks the exact same rules again once the request arrives at the server, regardless of what sent it.
@@ -175,6 +185,10 @@ Content-Type: application/json
 
 {"error":"Invalid or expired code"}
 ```
+
+Screenshot of that same terminal session:
+
+![Terminal showing the same verification code rejected as expired](docs/evidence/expired-code-terminal.png)
 
 **What I chose against, and why.** Just showing a countdown timer in the browser and disabling the input once it hits zero was the tempting shortcut, and plenty of apps only do that. It was rejected because a countdown is just decoration if the server doesn't also check it: someone could still submit the old code directly to the server (skipping the browser entirely, the same way I tested signup with curl) after the visual timer ran out, and it would still work.
 
