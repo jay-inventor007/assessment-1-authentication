@@ -27,6 +27,17 @@ The app appears at `http://localhost:5173`.
 
 **Creating an account.** The user fills in email and password on the sign-up screen (`SignUpPage.tsx`) and submits. The frontend sends that pair to `signup/index.ts`, which checks it isn't being sent too many times in a row (rate limiting), hashes the password so the real password is never stored, saves the new user row, generates a random 6-digit code, saves that code with an expiry time, and emails it. The user is then sent to the verification screen.
 
+Evidence of hitting this endpoint directly with curl, bypassing the browser entirely:
+
+```
+curl.exe -i -X POST "https://<project-ref>.supabase.co/functions/v1/signup" -H "Content-Type: application/json" -d "{\"email\":\"docs-evidence@example.com\",\"password\":\"EvidencePassword123\"}"
+
+HTTP/1.1 201 Created
+Content-Type: application/json
+
+{"email":"docs-evidence@example.com"}
+```
+
 **Verifying the email.** The user types the 6-digit code into `VerifyEmailPage.tsx`. This gets sent to `verify-email/index.ts`, which checks the code matches, hasn't expired, and hasn't already been used. If it's valid, the server marks the user as verified and starts a session (a signed-in browser cookie), and the user lands on the dashboard. If the code doesn't arrive, the resend button calls `resend-verification/index.ts`, which sends a new code, but only once every 60 seconds, enforced by the server, not just by disabling the button in the browser.
 
 **The dashboard.** `DashboardPage.tsx` is wrapped in `ProtectedRoute.tsx`, which calls `me/index.ts` to check whether the browser's cookie matches a real, unexpired session before showing anything. If someone who isn't signed in tries to go straight to the dashboard URL, this check fails and they're redirected to the sign-in screen instead.
@@ -71,6 +82,10 @@ export function verifyPassword(password: string, hash: string | null): Promise<b
 ```
 Signin always runs a bcrypt comparison, even if no account exists for the email typed in, comparing against a fake pre-made `DUMMY_HASH` instead of skipping the check. Without this, a real account would take slightly longer to reject a wrong password than a nonexistent one would, and that tiny timing difference could be used to figure out which emails have accounts on the app.
 
+Evidence the password is genuinely hashed, never stored in plain text:
+
+![The users table in Supabase Table Editor, showing a bcrypt hash in the password_hash column](docs/evidence/password-hash.png)
+
 **What I chose against, and why.** The standard `bcrypt` npm package most tutorials use relies on native compiled code, which doesn't run in Supabase Edge Functions since they execute in a sandboxed Deno environment with no support for native binary addons. `bcryptjs`, a pure JavaScript implementation of the same algorithm, was used instead specifically because it has to run in that environment, not because of a general preference.
 
 ### Rate Limiting
@@ -83,11 +98,46 @@ Signin always runs a bcrypt comparison, even if no account exists for the email 
 
 **What I chose against, and why.** A simpler fixed time window was used instead of a more precise sliding window. It just counts how many attempts happened in the last N seconds, which is easy to reason about and matches the attempts log directly, even if it's a little less exact right at the edge of the window.
 
+Evidence of the limit triggering, 10 wrong-password sign-in attempts in a row against the same account, then an 11th:
+
+```
+Attempt 1 : 401
+Attempt 2 : 401
+Attempt 3 : 401
+Attempt 4 : 401
+Attempt 5 : 401
+Attempt 6 : 401
+Attempt 7 : 401
+Attempt 8 : 401
+Attempt 9 : 401
+Attempt 10 : 401
+Attempt 11 : 429
+```
+
+Full response for the rejected attempt, showing the real `Retry-After` header:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 63
+Content-Type: application/json
+
+{"error":"Too many attempts. Try again later."}
+```
+
 ### Client-Side Versus Server-Side Validation
 
 **What it is.** Client-side validation checks input in the browser before it's sent, giving instant feedback without waiting on the network. Server-side validation checks the exact same rules again once the request arrives at the server, regardless of what sent it.
 
 **Why it is needed.** Client-side checks can be skipped entirely, since anyone can call the API directly instead of using the browser form. I proved this myself: sending a 5-character password straight to the signup endpoint with curl, bypassing the website completely, still got rejected with `400 Bad Request` and the exact same "Password must be at least 10 characters" message the browser would have shown. If only the browser checked this, that request would have gone straight into the database with a weak password.
+
+```
+curl.exe -i -X POST "https://<project-ref>.supabase.co/functions/v1/signup" -H "Content-Type: application/json" -d "{\"email\":\"bypass-test@example.com\",\"password\":\"short\"}"
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{"error":"Invalid input","issues":{"formErrors":[],"fieldErrors":{"password":["Password must be at least 10 characters"]}}}
+```
 
 **How I implemented it.** One shared file, `shared/validation.ts`, holding Zod schemas for every form. Both the React frontend (for instant inline errors) and every Edge Function (which calls `.safeParse()` on the incoming request body and returns 400 on failure) import from this exact same file, not two separate copies of similar rules.
 
@@ -110,6 +160,21 @@ Signin always runs a bcrypt comparison, even if no account exists for the email 
 **Why it is needed.** Without expiry, an old code or link would work forever. If an old email got found or leaked long after it was sent, a permanently valid code would still let someone into the account with no time limit on the risk at all.
 
 **How I implemented it.** An `expires_at` column on `verification_codes` and `password_reset_tokens`, set the moment the row is created (15 minutes ahead for codes, 30 minutes for reset tokens). Every lookup checks `expires_at` is still in the future; an expired row is never treated as valid, even though it's still sitting in the table. I tested this directly: I signed up, took a screenshot of the code and its `expires_at`, waited past that time, then tried to verify with that exact same code and got `400 Invalid or expired code` back.
+
+The code, live in the database right after signup, not yet expired:
+
+![The verification_codes table showing a live code and its expires_at timestamp](docs/evidence/verification-code.png)
+
+The same code rejected once that time passed:
+
+```
+curl.exe -i -X POST "https://<project-ref>.supabase.co/functions/v1/verify-email" -H "Content-Type: application/json" -d "{\"email\":\"expiry-evidence@example.com\",\"code\":\"946356\"}"
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{"error":"Invalid or expired code"}
+```
 
 **What I chose against, and why.** Just showing a countdown timer in the browser and disabling the input once it hits zero was the tempting shortcut, and plenty of apps only do that. It was rejected because a countdown is just decoration if the server doesn't also check it: someone could still submit the old code directly to the server (skipping the browser entirely, the same way I tested signup with curl) after the visual timer ran out, and it would still work.
 
